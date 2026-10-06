@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: fiyat-alarmi-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --workers 1 --threads 4 --timeout 120 app:app
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: NVIDIA_BASE_URL
+        value: https://integrate.api.nvidia.com/v1
+      - key: NVIDIA_MODEL
+        value: nvidia/nemotron-3.5-lightning-30b-a3b
+      - key: ALLOWED_ORIGINS
+        value: https://roadbl.github.io
+      - key: CHECK_INTERVAL_MINUTES
+        value: "30"
+      - key: ENABLE_SCHEDULER
+        value: "true"
