@@ -393,12 +393,15 @@ def jsonld_objects(soup):
                 stack.extend(obj)
 
 
-def page_excerpt(soup, limit=12000):
+def visible_text(soup):
     clone = BeautifulSoup(str(soup), "html.parser")
     for tag in clone(["script", "style", "noscript", "svg"]):
         tag.decompose()
+    return re.sub(r"\s+", " ", " ".join(clone.stripped_strings))
 
-    text = re.sub(r"\s+", " ", " ".join(clone.stripped_strings))
+
+def page_excerpt(soup, limit=12000):
+    text = visible_text(soup)
     windows = []
 
     for m in re.finditer(r"(?:₺|\bTL\b|\bTRY\b)", text, re.I):
@@ -407,6 +410,60 @@ def page_excerpt(soup, limit=12000):
             break
 
     return (" ... ".join(windows) if windows else text)[:limit]
+
+
+def extract_visible_try_price(soup):
+    """Fallback for stores that render the main price as ordinary visible text.
+
+    We collect every TRY/TL-looking amount, group identical values and prefer
+    the value repeated most often on the product page. This tends to select
+    the main product price instead of installment/guarantee amounts.
+    """
+    text = visible_text(soup)
+    matches = []
+
+    number = r"(\d{1,3}(?:[\.\s]\d{3})*(?:,\d{1,2})?|\d+(?:[\.,]\d{1,2})?)"
+    patterns = [
+        re.compile(rf"₺\s*{number}", re.I),
+        re.compile(rf"{number}\s*(?:TL|TRY)\b", re.I),
+    ]
+
+    for pattern in patterns:
+        for m in pattern.finditer(text):
+            raw = m.group(1)
+            price = parse_number(raw)
+            if price is None:
+                continue
+
+            # Ignore values that are almost certainly installment counts or
+            # tiny UI values, but keep genuinely inexpensive products.
+            if price < 5:
+                continue
+
+            context = text[max(0, m.start() - 60): min(len(text), m.end() + 35)].lower()
+            penalty = 0.0
+            if any(x in context for x in ["taksit", "aylık", "ayda", "x ", "ek garanti"]):
+                penalty += 0.35
+
+            matches.append((round(price, 2), penalty))
+
+    if not matches:
+        return None
+
+    stats = {}
+    for value, penalty in matches:
+        item = stats.setdefault(value, {"count": 0, "penalty": 0.0})
+        item["count"] += 1
+        item["penalty"] += penalty
+
+    # Repetition is the strongest signal. Penalties only break close ties.
+    best_value, best_stats = max(
+        stats.items(),
+        key=lambda kv: (kv[1]["count"] - kv[1]["penalty"], kv[1]["count"], kv[0])
+    )
+
+    confidence = 0.78 if best_stats["count"] >= 2 else 0.70
+    return best_value, confidence
 
 
 def extract_page(url: str):
@@ -474,6 +531,19 @@ def extract_page(url: str):
             "price": price,
             "currency": "TRY",
             "extract_confidence": 0.92,
+            "excerpt": page_excerpt(soup),
+        }
+
+    visible_price = extract_visible_try_price(soup)
+    if visible_price:
+        price, confidence = visible_price
+        return {
+            "url": r.url,
+            "title": title,
+            "source": host_from_url(r.url),
+            "price": price,
+            "currency": "TRY",
+            "extract_confidence": confidence,
             "excerpt": page_excerpt(soup),
         }
 
